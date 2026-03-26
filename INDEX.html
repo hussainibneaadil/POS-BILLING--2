@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FLX POS · stable inventory & folder picker</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        * { box-sizing: border-box; margin: 0; font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; }
+        body { background: #f3f6fb; display: flex; height: 100vh; overflow: hidden; }
+        #folder-overlay {
+            position: fixed; inset: 0; background: #13294b; display: flex; align-items: center; justify-content: center; z-index: 1000;
+            backdrop-filter: blur(5px);
+        }
+        .folder-card { background: white; max-width: 480px; padding: 2.8rem; border-radius: 40px; box-shadow: 0 30px 50px rgba(0,0,0,0.3); text-align: center; }
+        .btn-primary { background: #13294b; border: none; color: white; padding: 0.9rem 2.2rem; border-radius: 50px; font-size: 1.1rem; cursor: pointer; margin: 1rem 0; transition: 0.2s; }
+        .btn-primary:hover { background: #0f1f3a; }
+        .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
+        .error-message { color: #b00020; background: #ffe0e0; padding: 1rem; border-radius: 30px; margin: 1rem 0; }
+
+        #app-main { display: flex; width: 100%; height: 100%; opacity: 0; transition: opacity 0.2s; }
+        .sidebar { width: 270px; background: #13294b; color: #eef4ff; display: flex; flex-direction: column; padding: 1.8rem 0; box-shadow: 5px 0 20px rgba(0,0,0,0.08); }
+        .sidebar .shop-mini { padding: 0 1.5rem 2rem; border-bottom: 1px solid #254b75; margin-bottom: 1.5rem; }
+        .sidebar .shop-mini h3 { font-weight: 600; font-size: 1.6rem; color: white; }
+        .nav-item { padding: 1rem 1.8rem; display: flex; align-items: center; gap: 1rem; cursor: pointer; transition: 0.2s; border-radius: 0 30px 30px 0; margin-right: 0.8rem; }
+        .nav-item.active { background: #2b5580; border-left: 6px solid #ffb74d; font-weight: 600; }
+
+        .main-content { flex: 1; background: #f3f6fb; overflow-y: auto; padding: 2rem; }
+        .billing-split { display: flex; gap: 2rem; height: 100%; }
+        .item-grid-panel { flex: 2; background: white; border-radius: 32px; padding: 1.8rem; overflow-y: auto; }
+        .cart-panel { flex: 1.2; background: white; border-radius: 32px; padding: 1.8rem; display: flex; flex-direction: column; min-width: 360px; }
+        .cart-items { flex: 1; overflow-y: auto; margin: 1.2rem 0; border-top: 2px solid #eef2f6; border-bottom: 2px solid #eef2f6; padding: 0.8rem 0; }
+        .cart-row { display: flex; justify-content: space-between; align-items: center; padding: 0.7rem 0; border-bottom: 1px dashed #e9ecf0; }
+        .items-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: 16px; }
+        .item-card { background: #f9fcff; border-radius: 24px; padding: 1.2rem 0.5rem; text-align: center; border: 1px solid #eaf0f6; cursor: pointer; transition: 0.15s; }
+        .item-card.lowstock { background: #ffe5e5; border-color: #fbbbbb; }
+        .badge { background: #e7edf8; padding: 0.5rem 1.2rem; border-radius: 40px; display: inline-block; margin: 0.3rem; cursor: pointer; }
+        .selected-payment { background: #13294b; color: white; }
+        .customer-view-btn { background: #1b4a3d; color: white; border: none; border-radius: 40px; padding: 0.7rem 1.5rem; cursor: pointer; }
+        .inv-table { background: white; border-radius: 24px; padding: 1.5rem; overflow-x: auto; }
+        .inv-table table { width: 100%; border-collapse: collapse; }
+        .inv-table th, .inv-table td { border: 1px solid #d9e6f2; padding: 0.7rem; }
+        .inv-table th { background: #f0f6ff; }
+        .inv-table input { width: 100%; border: none; background: transparent; padding: 0.3rem; }
+        .inv-table tr.lowstock-row { background: #ffefef; }
+        .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.3); align-items: center; justify-content: center; z-index: 2000; }
+        .modal-card { background: white; border-radius: 40px; padding: 2rem; min-width: 360px; }
+        .print-receipt { font-family: 'Courier New', monospace; max-width: 300px; margin: auto; padding: 1rem; }
+        @media print { body * { visibility: hidden; } .print-receipt, .print-receipt * { visibility: visible; } .print-receipt { position: absolute; left: 0; top: 0; } }
+        .page { display: none; flex-direction: column; height: 100%; }
+        .page.active-page { display: flex; }
+    </style>
+</head>
+<body>
+    <div id="folder-overlay">
+        <div class="folder-card">
+            <i class="fas fa-folder-open"></i>
+            <h2>📁 Select data folder</h2>
+            <div id="api-check-message" style="margin-bottom: 1rem;"></div>
+            <p>All data stored here. Move folder to another PC to continue.</p>
+            <button class="btn-primary" id="select-folder-btn"><i class="fas fa-folder-tree"></i> Choose folder</button>
+            <div class="hint">Files are saved as JSON</div>
+        </div>
+    </div>
+
+    <div id="app-main">
+        <div class="sidebar">
+            <div class="shop-mini">
+                <h3 id="sidebar-shop-name">🛒 Shop</h3>
+                <p id="sidebar-tagline">tagline</p>
+            </div>
+            <div class="nav-item active" data-page="billing"><i class="fas fa-cash-register"></i> Billing</div>
+            <div class="nav-item" data-page="inventory"><i class="fas fa-clipboard-list"></i> Inventory</div>
+            <div class="nav-item" data-page="history"><i class="fas fa-history"></i> Bill history</div>
+            <div class="nav-item" data-page="analytics"><i class="fas fa-chart-pie"></i> Analytics</div>
+            <div class="nav-item" data-page="settings"><i class="fas fa-sliders-h"></i> Settings</div>
+        </div>
+
+        <div class="main-content">
+            <!-- BILLING PAGE -->
+            <div id="page-billing" class="page active-page">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 1.2rem;">
+                    <h2><i class="fas fa-cash-register"></i> Point of Sale</h2>
+                    <button class="customer-view-btn" id="open-customer-display"><i class="fas fa-tv"></i> Customer display</button>
+                </div>
+                <div class="billing-split">
+                    <div class="item-grid-panel">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 1.5rem;">
+                            <h3><i class="fas fa-cube"></i> Items</h3>
+                            <input type="text" id="item-search" placeholder="🔍 search" style="padding:0.6rem 1rem; border-radius:40px; border:1px solid #cfddee;">
+                        </div>
+                        <div id="items-grid-container" class="items-grid"></div>
+                    </div>
+                    <div class="cart-panel">
+                        <h3><i class="fas fa-shopping-cart"></i> Current cart</h3>
+                        <div id="cart-items-list" class="cart-items"></div>
+                        <div style="border-top: 2px solid #dbe4ed; padding: 1rem 0;">
+                            <div style="display: flex; justify-content: space-between;"><span>Subtotal:</span> <span id="cart-subtotal">$0.00</span></div>
+                            <div style="display: flex; justify-content: space-between; margin: 0.5rem 0;">
+                                <span>Discount:</span>
+                                <input type="number" id="discount-input" min="0" max="100" step="1" value="0" style="width:70px;"> %
+                            </div>
+                            <div style="display: flex; justify-content: space-between; font-weight:700; font-size: 1.3rem;"><span>Total:</span> <span id="cart-total">$0.00</span></div>
+                        </div>
+                        <div class="payment-section">
+                            <label>Payment method:</label>
+                            <div id="payment-methods-list" style="display:flex; flex-wrap:wrap; gap:8px; margin:12px 0;"></div>
+                            <button class="btn-primary" id="proceed-pay-btn" style="width:100%; padding:1rem;"><i class="fas fa-receipt"></i> Proceed & print bill</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- INVENTORY PAGE -->
+            <div id="page-inventory" class="page">
+                <h2><i class="fas fa-boxes"></i> Inventory (Excel‑like)</h2>
+                <button id="add-inventory-item" class="btn-primary" style="margin: 1.5rem 0;"><i class="fas fa-plus"></i> Add new item</button>
+                <div class="inv-table" id="inventory-table-wrapper"></div>
+            </div>
+
+            <!-- HISTORY PAGE -->
+            <div id="page-history" class="page">
+                <h2><i class="fas fa-history"></i> Bill history</h2>
+                <div style="display: flex; gap: 2rem; margin-top: 1.5rem;">
+                    <div style="flex:2; background: white; border-radius: 32px; padding:1.8rem;">
+                        <h4>Recent bills</h4>
+                        <div id="bill-list-container"></div>
+                        <div style="margin-top:2rem;">
+                            <label>Delete bills older than (days):</label>
+                            <input type="number" id="delete-days" value="30" style="width:70px;">
+                            <button id="delete-old-bills-btn" class="btn-primary">Delete old</button>
+                        </div>
+                    </div>
+                    <div style="flex:1; background: white; border-radius: 32px; padding:1.8rem;" id="bill-detail-panel">
+                        <h4>📄 Bill detail</h4>
+                        <div id="bill-detail-content">Select a bill</div>
+                        <button id="refund-bill-btn" style="display:none; margin-top:1rem;" class="btn-primary">Refund with note</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ANALYTICS PAGE -->
+            <div id="page-analytics" class="page">
+                <h2><i class="fas fa-chart-line"></i> Analytics</h2>
+                <div style="display: flex; gap: 2rem; margin-top: 1.5rem;">
+                    <div style="background:white; border-radius:32px; padding:2rem; flex:1;">
+                        <canvas id="salesChart" width="400" height="250"></canvas>
+                    </div>
+                    <div style="background:white; border-radius:32px; padding:2rem; flex:1;">
+                        <h4>Top items</h4><div id="top-items-list"></div>
+                        <h4>Payment method share</h4><div id="payment-stats"></div>
+                    </div>
+                </div>
+                <div style="margin-top:2rem; display:flex; gap:1rem;">
+                    <button id="reset-analytics-btn" class="btn-primary" style="background:#9a3e3e;">Reset all data</button>
+                    <button id="download-report-btn" class="btn-primary">Download report (JSON)</button>
+                </div>
+            </div>
+
+            <!-- SETTINGS PAGE -->
+            <div id="page-settings" class="page">
+                <h2><i class="fas fa-sliders-h"></i> Settings</h2>
+                <div style="background:white; border-radius:32px; padding:2.5rem; max-width:750px;">
+                    <div style="display:grid; grid-template-columns: 1fr 2fr; gap:1.5rem; align-items:center;"><label>Shop name</label><input id="set-shop-name"></div>
+                    <div style="display:grid; grid-template-columns: 1fr 2fr; gap:1.5rem; align-items:center;"><label>Tag line</label><input id="set-tagline"></div>
+                    <div style="display:grid; grid-template-columns: 1fr 2fr; gap:1.5rem; align-items:center;"><label>Bill note</label><input id="set-billnote"></div>
+                    <div style="display:grid; grid-template-columns: 1fr 2fr; gap:1.5rem; align-items:center;"><label>Global discount %</label><input id="set-global-discount" type="number" min="0" step="1"></div>
+                    <div style="display:grid; grid-template-columns: 1fr 2fr; gap:1.5rem; align-items:center;"><label>Auto‑apply discount</label><input type="checkbox" id="set-auto-discount"></div>
+                    <div style="margin-top:2rem;"><h4>Payment methods <button id="add-payment-method-btn">+ add</button></h4>
+                        <ul id="payment-method-list-settings" style="list-style:none;"></ul>
+                    </div>
+                    <div style="margin-top:3rem; border-top:2px solid #eef2f6; padding-top:2rem; display:flex; gap:1rem;">
+                        <button id="download-backup-btn" class="btn-primary">Download backup</button>
+                        <button id="restore-backup-btn" class="btn-primary">Restore from backup</button>
+                        <button id="logout-btn" style="background:#aaa;">Log out</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="variant-modal" class="modal"><div class="modal-card"><h3 id="modal-item-title">Choose variant</h3><div id="variant-list"></div><button id="close-modal-btn" class="btn-primary">Cancel</button></div></div>
+
+    <script>
+        (function() {
+            // ---------- API check ----------
+            const apiMsg = document.getElementById('api-check-message');
+            const selectBtn = document.getElementById('select-folder-btn');
+            if (!window.showDirectoryPicker) {
+                apiMsg.innerHTML = '<div class="error-message">⚠️ Your browser does not support File System Access API. Use Chrome/Edge with HTTPS or localhost.</div>';
+                selectBtn.disabled = true;
+            } else {
+                apiMsg.innerHTML = '<div style="color:green;">✅ Ready – click below to select folder</div>';
+            }
+
+            let dirHandle = null;
+            let data = {
+                settings: { shopName: 'FLX Shop', tagLine: 'your store', billNote: 'Thank you!', globalDiscount: 0, autoDiscount: false, paymentMethods: [{name:'Cash',enabled:true},{name:'Card',enabled:true}] },
+                items: [],
+                bills: [],
+                counters: { billSeq: 1, lastDate: new Date().toISOString().split('T')[0] }
+            };
+            let currentCart = [];
+            let selectedPayment = 'Cash';
+            let currentBillDetail = null;
+            let customerDisplayWindow = null;
+
+            // ---------- Disk helpers ----------
+            async function ensureFile(dir, fileName, defaultData) {
+                try {
+                    const fileHandle = await dir.getFileHandle(fileName, { create: true });
+                    const file = await fileHandle.getFile();
+                    const text = await file.text();
+                    return text ? JSON.parse(text) : defaultData;
+                } catch { return defaultData; }
+            }
+            async function writeFile(dir, fileName, obj) {
+                const fileHandle = await dir.getFileHandle(fileName, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(JSON.stringify(obj, null, 2));
+                await writable.close();
+            }
+
+            async function loadAll(dir) {
+                try {
+                    data.settings = await ensureFile(dir, 'settings.json', data.settings);
+                    data.items = await ensureFile(dir, 'items.json', []);
+                    data.bills = await ensureFile(dir, 'bills.json', []);
+                    data.counters = await ensureFile(dir, 'counters.json', { billSeq: 1, lastDate: new Date().toISOString().split('T')[0] });
+                } catch(e) { console.warn(e); }
+                // ensure variants have IDs
+                data.items = data.items.map(i => ({ ...i, variants: (i.variants || []).map(v => ({ ...v, id: v.id || crypto.randomUUID?.() || 'v'+Date.now() })) }));
+                renderSidebar();
+                syncDiscountFromSettings();
+            }
+
+            async function saveAll() {
+                if (!dirHandle) return;
+                await writeFile(dirHandle, 'settings.json', data.settings);
+                await writeFile(dirHandle, 'items.json', data.items);
+                await writeFile(dirHandle, 'bills.json', data.bills);
+                await writeFile(dirHandle, 'counters.json', data.counters);
+            }
+
+            // ---------- Folder selection ----------
+            selectBtn.onclick = async () => {
+                try {
+                    dirHandle = await window.showDirectoryPicker();
+                    await loadAll(dirHandle);
+                    document.getElementById('folder-overlay').style.display = 'none';
+                    document.getElementById('app-main').style.opacity = 1;
+                    renderAllPages();
+                } catch (err) {
+                    alert('Folder selection cancelled or failed.');
+                }
+            };
+
+            function renderAllPages() {
+                renderBillingPage();
+                renderInventoryTable();
+                renderHistoryList();
+                renderSettingsForm();
+                renderAnalytics();
+            }
+
+            function renderSidebar() {
+                document.getElementById('sidebar-shop-name').innerText = data.settings.shopName || 'Shop';
+                document.getElementById('sidebar-tagline').innerText = data.settings.tagLine || '';
+            }
+
+            // ---------- Discount sync ----------
+            function syncDiscountFromSettings() {
+                const discountInput = document.getElementById('discount-input');
+                if (data.settings.autoDiscount && discountInput) {
+                    discountInput.value = data.settings.globalDiscount;
+                }
+                renderCart();
+            }
+
+            function applyAutoDiscount() {
+                if (data.settings.autoDiscount) {
+                    document.getElementById('discount-input').value = data.settings.globalDiscount;
+                }
+                renderCart();
+                updateCustomerDisplay();
+            }
+
+            // ---------- Customer display ----------
+            function openCustomerDisplay() {
+                if (customerDisplayWindow && !customerDisplayWindow.closed) {
+                    customerDisplayWindow.focus();
+                    updateCustomerDisplay();
+                    return;
+                }
+                customerDisplayWindow = window.open('', 'CustomerDisplay', 'width=500,height=700');
+                customerDisplayWindow.document.write(`
+                    <html><head><title>Customer Display</title>
+                    <style>body{background:#1a2639;color:#fff;font-family:sans-serif;padding:2rem;} .card{background:#0f1a2f;border-radius:40px;padding:2rem;} .items{margin:1rem 0;border-top:2px solid #33415c;border-bottom:2px solid #33415c;padding:1rem 0;} .row{display:flex;justify-content:space-between;padding:0.5rem 0;} .total{font-size:2rem;font-weight:700;color:#b7e4c7;text-align:right;}</style></head>
+                    <body><div class="card"><h2>🛒 Your order</h2><div id="display-items" class="items"></div><div id="display-total" class="total">$0.00</div></div>
+                    <script>window.addEventListener('message', e=>{if(e.data.type==='cartUpdate'){document.getElementById('display-items').innerHTML=e.data.cart.map(i=>'<div class="row"><span>'+i.name+' x'+i.qty+'</span><span>$'+(i.price*i.qty).toFixed(2)+'</span></div>').join('');document.getElementById('display-total').innerText='$'+e.data.total.toFixed(2);}});<\/script>
+                    </body></html>`);
+                customerDisplayWindow.document.close();
+                updateCustomerDisplay();
+            }
+            function updateCustomerDisplay() {
+                if (!customerDisplayWindow || customerDisplayWindow.closed) return;
+                const subtotal = currentCart.reduce((a,c)=>a + c.price*c.qty,0);
+                const discount = parseFloat(document.getElementById('discount-input').value) || 0;
+                const total = subtotal * (1 - discount/100);
+                customerDisplayWindow.postMessage({ type:'cartUpdate', cart: currentCart.map(({name,qty,price})=>({name,qty,price})), total }, '*');
+            }
+
+            // ---------- Billing ----------
+            function renderBillingPage() {
+                const grid = document.getElementById('items-grid-container');
+                const search = document.getElementById('item-search').value.toLowerCase();
+                let html = '';
+                for (let item of data.items) {
+                    for (let v of (item.variants || [])) {
+                        const name = item.name + (v.name ? ` (${v.name})` : '');
+                        if (search && !name.toLowerCase().includes(search) && !(item.code||'').toLowerCase().includes(search)) continue;
+                        const low = v.qty <= (v.lowStock || 3);
+                        html += `<div class="item-card ${low ? 'lowstock' : ''}" data-item-id="${item.id}" data-var-id="${v.id}">
+                            <div class="item-code">${item.code || ''}</div>
+                            <div>${name}</div>
+                            <div class="item-price">$${v.price.toFixed(2)}</div>
+                            <div style="font-size:0.75rem;">stock: ${v.qty}</div>
+                        </div>`;
+                    }
+                }
+                grid.innerHTML = html || '<p>No items</p>';
+                document.querySelectorAll('.item-card').forEach(card => {
+                    card.addEventListener('click', () => {
+                        const itemId = card.dataset.itemId;
+                        const varId = card.dataset.varId;
+                        addToCart(itemId, varId);
+                    });
+                });
+                renderCart();
+            }
+
+            function addToCart(itemId, varId) {
+                const item = data.items.find(i => i.id === itemId);
+                const variant = item?.variants?.find(v => v.id === varId);
+                if (!variant || variant.qty <= 0) return alert('Out of stock');
+                const existing = currentCart.find(c => c.itemId === itemId && c.variantId === varId);
+                if (existing) {
+                    if (existing.qty + 1 > variant.qty) return alert('Not enough stock');
+                    existing.qty++;
+                } else {
+                    currentCart.push({ itemId, variantId: varId, name: item.name + (variant.name ? ` (${variant.name})` : ''), price: variant.price, qty: 1 });
+                }
+                renderCart();
+                updateCustomerDisplay();
+            }
+
+            function renderCart() {
+                const container = document.getElementById('cart-items-list');
+                let subtotal = 0;
+                let html = '';
+                currentCart.forEach((c, idx) => {
+                    const lineTotal = c.price * c.qty;
+                    subtotal += lineTotal;
+                    html += `<div class="cart-row"><span>${c.name} x${c.qty} @ $${c.price}</span> 
+                        <span>$${lineTotal.toFixed(2)} <button data-cart-index="${idx}"><i class="fas fa-trash"></i></button></span></div>`;
+                });
+                container.innerHTML = html || '<div style="text-align:center;padding:1rem;">Cart empty</div>';
+                document.querySelectorAll('.cart-row button').forEach(btn => {
+                    btn.onclick = () => {
+                        const idx = btn.dataset.cartIndex;
+                        if (idx !== undefined) currentCart.splice(idx,1);
+                        renderCart();
+                        updateCustomerDisplay();
+                    };
+                });
+                const discount = parseFloat(document.getElementById('discount-input').value) || 0;
+                const total = subtotal * (1 - discount/100);
+                document.getElementById('cart-subtotal').innerText = '$'+subtotal.toFixed(2);
+                document.getElementById('cart-total').innerText = '$'+total.toFixed(2);
+                // payment methods
+                const payDiv = document.getElementById('payment-methods-list');
+                payDiv.innerHTML = data.settings.paymentMethods.filter(p=>p.enabled).map(p => 
+                    `<span class="badge ${selectedPayment===p.name?'selected-payment':''}" data-pay="${p.name}">${p.name}</span>`
+                ).join('');
+                document.querySelectorAll('.badge').forEach(b => {
+                    b.onclick = () => { selectedPayment = b.dataset.pay; renderCart(); };
+                });
+            }
+
+            document.getElementById('proceed-pay-btn').onclick = async () => {
+                if (!currentCart.length) return alert('Cart empty');
+                for (let c of currentCart) {
+                    const item = data.items.find(i => i.id === c.itemId);
+                    const v = item.variants.find(vv => vv.id === c.variantId);
+                    if (v.qty < c.qty) return alert(`Not enough ${c.name}`);
+                }
+                for (let c of currentCart) {
+                    const item = data.items.find(i => i.id === c.itemId);
+                    const v = item.variants.find(vv => vv.id === c.variantId);
+                    v.qty -= c.qty;
+                }
+                const subtotal = currentCart.reduce((a,c)=>a + c.price*c.qty,0);
+                const discount = parseFloat(document.getElementById('discount-input').value) || 0;
+                const total = subtotal * (1 - discount/100);
+                const today = new Date().toISOString().split('T')[0];
+                if (data.counters.lastDate !== today) {
+                    data.counters.lastDate = today;
+                    data.counters.billSeq = 1;
+                } else {
+                    data.counters.billSeq++;
+                }
+                const billId = `${today}-${data.counters.billSeq}`;
+                const bill = {
+                    id: billId, date: new Date().toISOString(), items: currentCart.map(c=>({...c})),
+                    payment: selectedPayment, discount, subtotal, total,
+                    shopName: data.settings.shopName, tagLine: data.settings.tagLine, note: data.settings.billNote
+                };
+                data.bills.unshift(bill);
+                await saveAll();
+                printReceipt(bill);
+                currentCart = [];
+                renderCart();
+                renderBillingPage();
+                renderAnalytics();
+                renderHistoryList();
+                updateCustomerDisplay();
+            };
+
+            function printReceipt(bill) {
+                const win = window.open('', '_blank');
+                win.document.write(`
+                    <html><head><title>Receipt</title><style>body{font-family:'Courier New';padding:20px;max-width:300px;margin:auto;}</style></head>
+                    <body><div><h2>${bill.shopName}</h2><p>${bill.tagLine}</p><hr>
+                    <p>Bill #${bill.id}</p><p>${new Date(bill.date).toLocaleString()}</p>
+                    <table width="100%">${bill.items.map(i=>`<tr><td>${i.name} x${i.qty}</td><td align="right">$${(i.price*i.qty).toFixed(2)}</td></tr>`).join('')}</table><hr>
+                    <p>Subtotal: $${bill.subtotal.toFixed(2)}</p><p>Discount: ${bill.discount}%</p>
+                    <p><strong>Total: $${bill.total.toFixed(2)}</strong></p><p>Payment: ${bill.payment}</p><hr><p>${bill.note}</p></div></body></html>`);
+                win.document.close();
+                win.print();
+            }
+
+            document.getElementById('open-customer-display').onclick = openCustomerDisplay;
+            document.getElementById('discount-input').oninput = () => { renderCart(); updateCustomerDisplay(); };
+            document.getElementById('item-search').oninput = renderBillingPage;
+
+            // ---------- Inventory (fixed editing) ----------
+            function renderInventoryTable() {
+                const wrapper = document.getElementById('inventory-table-wrapper');
+                let html = `<table><thead><tr><th>Item name</th><th>Code</th><th>Variant</th><th>Price</th><th>Stock</th><th>Low threshold</th><th>Action</th></tr></thead><tbody>`;
+                data.items.forEach((item, idx) => {
+                    if (!item.variants || item.variants.length === 0) {
+                        item.variants = [{ id: crypto.randomUUID?.()||'v1', name: '', price: 0, qty: 0, lowStock: 3 }];
+                    }
+                    item.variants.forEach((v, vidx) => {
+                        const low = v.qty <= (v.lowStock || 3);
+                        html += `<tr class="${low ? 'lowstock-row' : ''}">
+                            <td><input type="text" class="item-name" data-item-idx="${idx}" data-field="name" value="${escapeHtml(item.name)}"></td>
+                            <td><input type="text" data-item-idx="${idx}" data-field="code" value="${escapeHtml(item.code||'')}"></td>
+                            <td><input type="text" data-item-idx="${idx}" data-var-idx="${vidx}" data-field="vname" value="${escapeHtml(v.name||'')}"></td>
+                            <td><input type="number" step="0.01" data-item-idx="${idx}" data-var-idx="${vidx}" data-field="price" value="${v.price}"></td>
+                            <td><input type="number" data-item-idx="${idx}" data-var-idx="${vidx}" data-field="qty" value="${v.qty}"></td>
+                            <td><input type="number" data-item-idx="${idx}" data-var-idx="${vidx}" data-field="lowstock" value="${v.lowStock||3}"></td>
+                            <td><button class="remove-variant" data-item-idx="${idx}" data-var-idx="${vidx}"><i class="fas fa-trash"></i></button></td>
+                        </tr>`;
+                    });
+                    html += `<tr><td colspan="7"><button class="add-variant" data-item-idx="${idx}">➕ Add variant to this item</button></td></tr>`;
+                });
+                html += `</tbody></table>`;
+                wrapper.innerHTML = html;
+                // Attach events
+                wrapper.querySelectorAll('input').forEach(inp => inp.addEventListener('change', onInventoryEdit));
+                wrapper.querySelectorAll('.remove-variant').forEach(btn => btn.addEventListener('click', removeVariant));
+                wrapper.querySelectorAll('.add-variant').forEach(btn => btn.addEventListener('click', addVariant));
+            }
+
+            function escapeHtml(str) { return str.replace(/[&<>]/g, function(m){if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
+
+            async function onInventoryEdit(e) {
+                const inp = e.target;
+                const itemIdx = parseInt(inp.dataset.itemIdx);
+                const varIdx = inp.dataset.varIdx !== undefined ? parseInt(inp.dataset.varIdx) : null;
+                const field = inp.dataset.field;
+                const item = data.items[itemIdx];
+                if (!item) return;
+                if (field === 'name') {
+                    item.name = inp.value;
+                } else if (field === 'code') {
+                    item.code = inp.value;
+                } else if (field === 'vname' && varIdx !== null) {
+                    item.variants[varIdx].name = inp.value;
+                } else if (field === 'price' && varIdx !== null) {
+                    item.variants[varIdx].price = parseFloat(inp.value) || 0;
+                } else if (field === 'qty' && varIdx !== null) {
+                    item.variants[varIdx].qty = parseInt(inp.value) || 0;
+                } else if (field === 'lowstock' && varIdx !== null) {
+                    item.variants[varIdx].lowStock = parseInt(inp.value) || 3;
+                }
+                await saveAll();
+                renderInventoryTable();  // re-render to reflect changes
+                renderBillingPage();     // update item grid
+            }
+
+            async function removeVariant(e) {
+                const btn = e.currentTarget;
+                const itemIdx = parseInt(btn.dataset.itemIdx);
+                const varIdx = parseInt(btn.dataset.varIdx);
+                if (data.items[itemIdx].variants.length <= 1) {
+                    if (!confirm('Last variant — delete whole item?')) return;
+                    data.items.splice(itemIdx, 1);
+                } else {
+                    data.items[itemIdx].variants.splice(varIdx, 1);
+                }
+                await saveAll();
+                renderInventoryTable();
+                renderBillingPage();
+            }
+
+            async function addVariant(e) {
+                const itemIdx = parseInt(e.currentTarget.dataset.itemIdx);
+                data.items[itemIdx].variants.push({ id: crypto.randomUUID?.()||'v'+Date.now(), name: 'new', price: 0, qty: 0, lowStock: 3 });
+                await saveAll();
+                renderInventoryTable();
+                renderBillingPage();
+            }
+
+            document.getElementById('add-inventory-item').onclick = async () => {
+                data.items.push({ id: crypto.randomUUID?.()||'i'+Date.now(), name: 'New item', code: '', variants: [{ id: crypto.randomUUID?.()||'v1', name: '', price: 0, qty: 0, lowStock: 3 }] });
+                await saveAll();
+                renderInventoryTable();
+                renderBillingPage();
+            };
+
+            // ---------- History ----------
+            function renderHistoryList() {
+                const container = document.getElementById('bill-list-container');
+                let html = '<ul style="list-style:none;">';
+                data.bills.slice(0, 20).forEach(b => {
+                    html += `<li style="cursor:pointer; padding:0.5rem; border-bottom:1px solid #eee;" data-bill-id="${b.id}">🧾 ${b.id}  $${b.total} (${b.payment})</li>`;
+                });
+                html += '</ul>';
+                container.innerHTML = html;
+                document.querySelectorAll('[data-bill-id]').forEach(el => {
+                    el.onclick = () => showBillDetail(el.dataset.billId);
+                });
+            }
+            function showBillDetail(billId) {
+                const bill = data.bills.find(b => b.id === billId);
+                if (!bill) return;
+                currentBillDetail = bill;
+                const div = document.getElementById('bill-detail-content');
+                div.innerHTML = `<strong>${bill.id}</strong><br>${new Date(bill.date).toLocaleString()}<br>
+                Items: ${bill.items.map(i=>`${i.name} x${i.qty} $${(i.price*i.qty).toFixed(2)}`).join('<br>')}<br>
+                Total: $${bill.total} (${bill.payment})`;
+                document.getElementById('refund-bill-btn').style.display = 'block';
+            }
+            document.getElementById('refund-bill-btn').onclick = async () => {
+                if (!currentBillDetail) return;
+                const note = prompt('Refund reason:');
+                if (note === null) return;
+                for (let ci of currentBillDetail.items) {
+                    const item = data.items.find(i => i.id === ci.itemId);
+                    if (item) {
+                        const v = item.variants.find(vv => vv.id === ci.variantId);
+                        if (v) v.qty += ci.qty;
+                    }
+                }
+                currentBillDetail.refunded = true;
+                currentBillDetail.refundNote = note;
+                currentBillDetail.refundDate = new Date().toISOString();
+                await saveAll();
+                renderBillingPage();
+                renderHistoryList();
+                renderAnalytics();
+                alert('Refund recorded');
+            };
+            document.getElementById('delete-old-bills-btn').onclick = async () => {
+                const days = parseInt(document.getElementById('delete-days').value);
+                const cutoff = Date.now() - days * 86400000;
+                const newBills = data.bills.filter(b => new Date(b.date).getTime() > cutoff);
+                if (newBills.length !== data.bills.length) {
+                    data.bills = newBills;
+                    await saveAll();
+                    renderHistoryList();
+                    renderAnalytics();
+                }
+            };
+
+            // ---------- Analytics ----------
+            let chart;
+            function renderAnalytics() {
+                const ctx = document.getElementById('salesChart').getContext('2d');
+                if (chart) chart.destroy();
+                const salesByDay = {};
+                data.bills.filter(b => !b.refunded).forEach(b => {
+                    const day = b.date.split('T')[0];
+                    salesByDay[day] = (salesByDay[day]||0) + b.total;
+                });
+                const labels = Object.keys(salesByDay).sort().slice(-7);
+                const values = labels.map(l => salesByDay[l]||0);
+                chart = new Chart(ctx, { type: 'line', data: { labels, datasets: [{ label: 'Daily sales', data: values, borderColor: '#13294b' }] } });
+                const itemCount = {};
+                data.bills.filter(b => !b.refunded).forEach(b => b.items.forEach(i => itemCount[i.name] = (itemCount[i.name]||0) + i.qty));
+                const top = Object.entries(itemCount).sort((a,b)=>b[1]-a[1]).slice(0,5);
+                document.getElementById('top-items-list').innerHTML = '<ul>'+top.map(t=>`<li>${t[0]}: ${t[1]}</li>`).join('')+'</ul>';
+                const payTotal = {};
+                data.bills.filter(b => !b.refunded).forEach(b => payTotal[b.payment] = (payTotal[b.payment]||0) + b.total);
+                document.getElementById('payment-stats').innerHTML = Object.entries(payTotal).map(([p,t])=>`<div>${p}: $${t.toFixed(2)}</div>`).join('');
+            }
+            document.getElementById('reset-analytics-btn').onclick = async () => {
+                if (confirm('Reset all sales and items stock?')) {
+                    data.bills = [];
+                    data.items = data.items.map(i => ({ ...i, variants: i.variants.map(v => ({ ...v, qty: 0 })) }));
+                    await saveAll();
+                    renderAnalytics();
+                    renderBillingPage();
+                    renderInventoryTable();
+                    renderHistoryList();
+                }
+            };
+            document.getElementById('download-report-btn').onclick = () => {
+                const blob = new Blob([JSON.stringify({ sales: data.bills, items: data.items }, null, 2)], {type:'application/json'});
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob); a.download = 'analytics_report.json'; a.click();
+            };
+
+            // ---------- Settings ----------
+            function renderSettingsForm() {
+                document.getElementById('set-shop-name').value = data.settings.shopName;
+                document.getElementById('set-tagline').value = data.settings.tagLine;
+                document.getElementById('set-billnote').value = data.settings.billNote;
+                document.getElementById('set-global-discount').value = data.settings.globalDiscount;
+                document.getElementById('set-auto-discount').checked = data.settings.autoDiscount;
+                renderPaymentSettings();
+            }
+            function renderPaymentSettings() {
+                const ul = document.getElementById('payment-method-list-settings');
+                ul.innerHTML = data.settings.paymentMethods.map((p,i)=>`
+                    <li><input type="checkbox" data-pay-idx="${i}" ${p.enabled?'checked':''}> ${p.name}
+                    <button data-remove-idx="${i}"><i class="fas fa-trash"></i></button></li>
+                `).join('');
+                ul.querySelectorAll('input[type=checkbox]').forEach(cb => cb.onchange = async (e) => {
+                    const idx = cb.dataset.payIdx;
+                    data.settings.paymentMethods[idx].enabled = cb.checked;
+                    await saveAll();
+                    renderCart();
+                });
+                ul.querySelectorAll('button').forEach(btn => btn.onclick = async (e) => {
+                    const idx = btn.dataset.removeIdx;
+                    data.settings.paymentMethods.splice(idx,1);
+                    await saveAll();
+                    renderSettingsForm();
+                    renderCart();
+                });
+            }
+            document.getElementById('add-payment-method-btn').onclick = async () => {
+                const name = prompt('Payment method name');
+                if (name) {
+                    data.settings.paymentMethods.push({name, enabled:true});
+                    await saveAll();
+                    renderSettingsForm();
+                    renderCart();
+                }
+            };
+            document.getElementById('set-shop-name').onchange = async (e) => { data.settings.shopName = e.target.value; await saveAll(); renderSidebar(); };
+            document.getElementById('set-tagline').onchange = async (e) => { data.settings.tagLine = e.target.value; await saveAll(); renderSidebar(); };
+            document.getElementById('set-billnote').onchange = async (e) => { data.settings.billNote = e.target.value; await saveAll(); };
+            document.getElementById('set-global-discount').onchange = async (e) => { data.settings.globalDiscount = parseFloat(e.target.value)||0; await saveAll(); applyAutoDiscount(); };
+            document.getElementById('set-auto-discount').onchange = async (e) => { data.settings.autoDiscount = e.target.checked; await saveAll(); applyAutoDiscount(); };
+            document.getElementById('download-backup-btn').onclick = async () => {
+                const backup = { settings: data.settings, items: data.items, bills: data.bills, counters: data.counters };
+                const blob = new Blob([JSON.stringify(backup,null,2)], {type:'application/json'});
+                const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'pos_backup.json'; a.click();
+            };
+            document.getElementById('restore-backup-btn').onclick = () => {
+                const input = document.createElement('input');
+                input.type = 'file'; input.accept = '.json';
+                input.onchange = async (e) => {
+                    const file = e.target.files[0];
+                    const text = await file.text();
+                    const backup = JSON.parse(text);
+                    if (backup.settings) data.settings = backup.settings;
+                    if (backup.items) data.items = backup.items;
+                    if (backup.bills) data.bills = backup.bills;
+                    if (backup.counters) data.counters = backup.counters;
+                    await saveAll();
+                    renderAllPages();
+                    applyAutoDiscount();
+                };
+                input.click();
+            };
+            document.getElementById('logout-btn').onclick = () => {
+                if (customerDisplayWindow && !customerDisplayWindow.closed) customerDisplayWindow.close();
+                dirHandle = null;
+                document.getElementById('folder-overlay').style.display = 'flex';
+                document.getElementById('app-main').style.opacity = 0;
+            };
+
+            // ---------- Navigation ----------
+            document.querySelectorAll('.nav-item').forEach(nav => {
+                nav.onclick = () => {
+                    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+                    nav.classList.add('active');
+                    const page = nav.dataset.page;
+                    document.querySelectorAll('.page').forEach(p => p.classList.remove('active-page'));
+                    document.getElementById(`page-${page}`).classList.add('active-page');
+                    if (page === 'inventory') renderInventoryTable();
+                    if (page === 'history') renderHistoryList();
+                    if (page === 'analytics') renderAnalytics();
+                    if (page === 'settings') renderSettingsForm();
+                    if (page === 'billing') renderBillingPage();
+                };
+            });
+        })();
+    </script>
+</body>
+</html>
